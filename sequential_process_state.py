@@ -441,12 +441,12 @@ class SequentialStateProcessor:
         print("4. Show available states")
         print("5. Exit")
         print()
-        
+
         while True:
             choice = input("Select option (1-5): ").strip()
-            
+
             if choice == "1":
-                return states
+                return self.filter_states_for_all_option(states)
             elif choice == "2":
                 return self.select_specific_states(states)
             elif choice == "3":
@@ -463,7 +463,51 @@ class SequentialStateProcessor:
                 return []
             else:
                 print("Invalid choice. Please select 1-5.")
-    
+
+    def filter_states_for_all_option(self, states):
+        """Filter states for 'all states' option with specific requirements:
+        - Skip 'Andaman and Nicobar Islands' and 'Andhra Pradesh'
+        - Start from the 3rd state in the filtered list (index 2)
+        """
+        try:
+            # States to exclude
+            excluded_states = ['ANDAMAN & NICOBAR ISLANDS', 'ANDHRA PRADESH']
+
+            # Filter out excluded states
+            filtered_states = []
+            for state in states:
+                state_name = state['stateName'].upper()
+                if state_name not in excluded_states:
+                    filtered_states.append(state)
+
+            # Start from index 2 (3rd position) in the filtered list
+            if len(filtered_states) >= 3:
+                final_states = filtered_states[2:]  # Start from 3rd state (index 2)
+
+                logger.info(f"🔍 Filtered states for 'all states' processing:")
+                logger.info(f"   - Excluded: {excluded_states}")
+                logger.info(f"   - Starting from 3rd state in filtered list: {final_states[0]['stateName'] if final_states else 'None'}")
+                logger.info(f"   - Total states to process: {len(final_states)}")
+
+                print(f"\n📋 'All states' processing configuration:")
+                print(f"   ❌ Excluded states: {', '.join(excluded_states)}")
+                if final_states:
+                    print(f"   🎯 Starting from: {final_states[0]['stateName']}")
+                    print(f"   📊 Total states to process: {len(final_states)}")
+                else:
+                    print(f"   ⚠️ No states available after filtering")
+
+                return final_states
+            else:
+                logger.warning(f"⚠️ Not enough states after filtering. Available: {len(filtered_states)}, Required: at least 3")
+                print(f"⚠️ Not enough states available after filtering (need at least 3, have {len(filtered_states)})")
+                return []
+
+        except Exception as e:
+            logger.error(f"❌ Error filtering states for 'all states' option: {e}")
+            print(f"❌ Error filtering states: {e}")
+            return states  # Fallback to original list
+
     def select_specific_states(self, states):
         """Allow user to select specific states"""
         print(f"\n📋 Available states:")
