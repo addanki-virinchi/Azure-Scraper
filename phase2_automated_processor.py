@@ -258,26 +258,54 @@ class AutomatedPhase2Processor:
                         if basic_details_elements:
                             logger.info(f"   Found {len(basic_details_elements)} basic detail elements")
 
+                            # Define field mapping for proper extraction
+                            basic_fields_map = {
+                                'Location': 'location',
+                                'School Category': 'school_category',
+                                'Class From': 'class_from',
+                                'Class To': 'class_to',
+                                'School Type': 'school_type',
+                                'Year of Establishment': 'year_of_establishment',
+                                'National Management': 'national_management',
+                                'State Management': 'state_management',
+                                'Affiliation Board Sec.': 'affiliation_board_sec',
+                                'Affiliation Board HSec.': 'affiliation_board_hsec'
+                            }
+
                             for element in basic_details_elements:
                                 try:
-                                    element_text = element.text.strip()
-                                    if "Academic Year" in element_text:
-                                        data['academic_year'] = self.extract_value_from_element_text(element_text, "Academic Year")
-                                    elif "Location" in element_text:
-                                        data['location'] = self.extract_value_from_element_text(element_text, "Location")
-                                    elif "School Category" in element_text:
-                                        data['school_category'] = self.extract_value_from_element_text(element_text, "School Category")
-                                    elif "Class From" in element_text:
-                                        data['class_from'] = self.extract_value_from_element_text(element_text, "Class From")
-                                    elif "Class To" in element_text:
-                                        data['class_to'] = self.extract_value_from_element_text(element_text, "Class To")
-                                    elif "School Type" in element_text:
-                                        data['school_type'] = self.extract_value_from_element_text(element_text, "School Type")
-                                    elif "Year of Establishment" in element_text:
-                                        data['year_of_establishment'] = self.extract_value_from_element_text(element_text, "Year of Establishment")
+                                    # Find the title element within this schoolInfoCol
+                                    title_element = element.find_element(By.CSS_SELECTOR, ".title p.fw-600")
+                                    title_text = title_element.text.strip()
+
+                                    # Find the corresponding value element
+                                    value_element = element.find_element(By.CSS_SELECTOR, ".blueCol")
+                                    value_text = value_element.text.strip()
+
+                                    # Map the field to our data structure
+                                    if title_text in basic_fields_map and value_text:
+                                        field_key = basic_fields_map[title_text]
+                                        data[field_key] = value_text
+                                        logger.debug(f"   Extracted {title_text}: {value_text}")
+
                                 except Exception as e:
                                     logger.debug(f"   Error processing basic detail element: {e}")
                                     continue
+
+                            # Also check for Academic Year in the header section
+                            try:
+                                academic_year_element = self.driver.find_element(By.CSS_SELECTOR, ".innerPad .fw-600")
+                                academic_year_text = academic_year_element.text.strip()
+                                if "Academic Year" in academic_year_text:
+                                    # Extract year from text like "Academic Year : 2023-24"
+                                    import re
+                                    year_match = re.search(r'Academic Year[:\s]*([^<\n]+)', academic_year_text)
+                                    if year_match:
+                                        data['academic_year'] = year_match.group(1).strip()
+                                        logger.debug(f"   Extracted Academic Year: {data['academic_year']}")
+                            except:
+                                logger.debug("   Academic Year not found in header")
+
                     except Exception as e:
                         logger.debug(f"   Error finding basic details elements: {e}")
 
@@ -288,25 +316,67 @@ class AutomatedPhase2Processor:
                             data['academic_year'] = academic_year_match.group(1).strip()
 
                     if data['location'] == 'N/A':
-                        location_match = re.search(r'Location[:\s]*(?:<[^>]*>)*([^<\n]+)', page_text, re.IGNORECASE)
+                        location_match = re.search(r'Location</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
                         if location_match:
                             data['location'] = location_match.group(1).strip()
 
                     if data['school_category'] == 'N/A':
-                        category_match = re.search(r'School Category[:\s]*(?:<[^>]*>)*([^<\n]+)', page_text, re.IGNORECASE)
+                        category_match = re.search(r'School Category</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
                         if category_match:
                             data['school_category'] = category_match.group(1).strip()
 
                     if data['school_type'] == 'N/A':
-                        type_match = re.search(r'School Type[:\s]*(?:<[^>]*>)*([^<\n]+)', page_text, re.IGNORECASE)
+                        type_match = re.search(r'School Type</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
                         if type_match:
                             data['school_type'] = type_match.group(1).strip()
+
+                    if data['year_of_establishment'] == 'N/A':
+                        year_match = re.search(r'Year of Establishment</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
+                        if year_match:
+                            data['year_of_establishment'] = year_match.group(1).strip()
+
+                    if data['class_from'] == 'N/A':
+                        class_from_match = re.search(r'Class From</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
+                        if class_from_match:
+                            data['class_from'] = class_from_match.group(1).strip()
+
+                    if data['class_to'] == 'N/A':
+                        class_to_match = re.search(r'Class To</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
+                        if class_to_match:
+                            data['class_to'] = class_to_match.group(1).strip()
+
+                    if data['national_management'] == 'N/A':
+                        national_mgmt_match = re.search(r'National Management</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
+                        if national_mgmt_match:
+                            data['national_management'] = national_mgmt_match.group(1).strip()
+
+                    if data['state_management'] == 'N/A':
+                        state_mgmt_match = re.search(r'State Management</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
+                        if state_mgmt_match:
+                            data['state_management'] = state_mgmt_match.group(1).strip()
+
+                    if data['affiliation_board_sec'] == 'N/A':
+                        affil_sec_match = re.search(r'Affiliation Board Sec\.</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
+                        if affil_sec_match:
+                            data['affiliation_board_sec'] = affil_sec_match.group(1).strip()
+
+                    if data['affiliation_board_hsec'] == 'N/A':
+                        affil_hsec_match = re.search(r'Affiliation Board HSec\.</p></div><div[^>]*class="blueCol">([^<]+)', page_text, re.IGNORECASE)
+                        if affil_hsec_match:
+                            data['affiliation_board_hsec'] = affil_hsec_match.group(1).strip()
 
                     # Combine class range if both from and to are found
                     if data['class_from'] != 'N/A' and data['class_to'] != 'N/A':
                         data['class_range'] = f"{data['class_from']} To {data['class_to']}"
 
-                    logger.info(f"   ✅ Basic Details extracted: Category={data['school_category']}, Type={data['school_type']}")
+                    # Count extracted basic details fields
+                    basic_fields_extracted = sum(1 for field in ['location', 'school_category', 'school_type', 'year_of_establishment',
+                                                                'national_management', 'state_management', 'affiliation_board_sec',
+                                                                'affiliation_board_hsec'] if data[field] != 'N/A')
+
+                    logger.info(f"   ✅ Basic Details extracted: {basic_fields_extracted}/8 fields")
+                    logger.info(f"      Category={data['school_category']}, Type={data['school_type']}, Year={data['year_of_establishment']}")
+                    logger.info(f"      Affiliation Sec={data['affiliation_board_sec']}, HSec={data['affiliation_board_hsec']}")
 
                 except Exception as e:
                     logger.debug(f"   Error extracting basic details: {e}")
