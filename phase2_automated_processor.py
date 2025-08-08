@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Phase 2 Automated Processor - Fully automated processing of Phase 1 CSV files
+Phase 2 Automated Processor - Dual Output Strategy Implementation
 - Automatically reads Phase 1 CSV files
 - Processes ALL schools with know_more_links
+- INCREMENTAL CSV: Each school saved immediately for crash protection
+- GOOGLE SHEETS: Bulk upload after state completion
 - No user interaction required
-- Optimized for large-scale batch processing
+- Optimized for large-scale processing with data integrity
 """
 
 import pandas as pd
@@ -20,9 +22,148 @@ import os
 import glob
 import re
 
+# Google Sheets integration
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GOOGLE_SHEETS_AVAILABLE = True
+except ImportError as e:
+    GOOGLE_SHEETS_AVAILABLE = False
+    gspread = None
+    Credentials = None
+    logging.warning(f"Google Sheets packages not available: {e}. Install with: pip install gspread google-auth")
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Google Sheets Configuration
+GOOGLE_SHEETS_ENABLED = True
+GOOGLE_SHEET_NAME = "Know your School Database"
+SERVICE_ACCOUNT_FILE = "credentials.json"
+
+class GoogleSheetsUploader:
+    """Google Sheets uploader for Phase 2 data"""
+
+    def __init__(self):
+        self.client = None
+        self.spreadsheet = None
+        self.authenticated = False
+
+    def authenticate(self):
+        """Authenticate with Google Sheets using service account"""
+        try:
+            if not GOOGLE_SHEETS_AVAILABLE:
+                logger.warning("⚠️ Google Sheets packages not available")
+                return False
+
+            if not os.path.exists(SERVICE_ACCOUNT_FILE):
+                logger.error(f"❌ Service account file not found: {SERVICE_ACCOUNT_FILE}")
+                return False
+
+            # Define the scope
+            scope = [
+                'https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive'
+            ]
+
+            # Authenticate using service account
+            credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scope)
+            self.client = gspread.authorize(credentials)
+
+            # Open the spreadsheet
+            self.spreadsheet = self.client.open(GOOGLE_SHEET_NAME)
+
+            self.authenticated = True
+            logger.info(f"✅ Successfully authenticated with Google Sheets: {GOOGLE_SHEET_NAME}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to authenticate with Google Sheets: {e}")
+            return False
+
+    def create_or_get_worksheet(self, state_name):
+        """Create or get worksheet for a state"""
+        try:
+            if not self.authenticated:
+                return None
+
+            # Clean state name for worksheet title
+            clean_state = state_name.replace(' ', '_').replace('&', 'and').replace('/', '_')
+            worksheet_name = f"Phase2_{clean_state}"
+
+            try:
+                # Try to get existing worksheet
+                worksheet = self.spreadsheet.worksheet(worksheet_name)
+                logger.info(f"📋 Using existing worksheet: {worksheet_name}")
+            except gspread.WorksheetNotFound:
+                # Create new worksheet
+                worksheet = self.spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=50)
+                logger.info(f"📋 Created new worksheet: {worksheet_name}")
+
+            return worksheet
+
+        except Exception as e:
+            logger.error(f"❌ Error creating/getting worksheet for {state_name}: {e}")
+            return None
+
+    def upload_phase2_data(self, csv_file, state_name):
+        """Upload Phase 2 data to Google Sheets"""
+        try:
+            if not self.authenticated:
+                logger.warning("⚠️ Not authenticated with Google Sheets")
+                return False
+
+            if not os.path.exists(csv_file):
+                logger.error(f"❌ CSV file not found: {csv_file}")
+                return False
+
+            # Read CSV data
+            df = pd.read_csv(csv_file)
+            if len(df) == 0:
+                logger.warning(f"⚠️ No data in CSV file: {csv_file}")
+                return True  # Not an error, just no data
+
+            # Get or create worksheet
+            worksheet = self.create_or_get_worksheet(state_name)
+            if not worksheet:
+                return False
+
+            # Clear existing data and add headers
+            worksheet.clear()
+            headers = df.columns.tolist()
+            worksheet.append_row(headers)
+            logger.info(f"📋 Added headers: {len(headers)} columns")
+
+            # Convert DataFrame to list of lists for upload
+            data_rows = df.values.tolist()
+
+            # Ensure all values are strings to avoid JSON issues
+            clean_data_rows = []
+            for row in data_rows:
+                clean_row = [str(cell) if cell is not None else 'N/A' for cell in row]
+                clean_data_rows.append(clean_row)
+
+            data_rows = clean_data_rows
+
+            # Upload data in batches to avoid API limits
+            batch_size = 100
+            total_rows = len(data_rows)
+
+            for i in range(0, total_rows, batch_size):
+                batch = data_rows[i:i + batch_size]
+                worksheet.append_rows(batch)
+                logger.info(f"📤 Uploaded batch {i//batch_size + 1}: {len(batch)} rows to {state_name}")
+
+                # Brief pause to respect API limits
+                time.sleep(1)
+
+            logger.info(f"✅ Successfully uploaded {total_rows} rows to Google Sheets: {state_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to upload data to Google Sheets for {state_name}: {e}")
+            return False
 
 class AutomatedPhase2Processor:
     def __init__(self):
@@ -32,6 +173,86 @@ class AutomatedPhase2Processor:
         self.fail_count = 0
         self.extracted_signatures = set()  # For duplicate detection
         self.optimal_batch_size = 50  # Optimized batch size for automation
+
+        # Incremental CSV tracking
+        self.incremental_csv_file = None
+        self.csv_headers_written = False
+
+        # Google Sheets integration
+        self.sheets_uploader = None
+        if GOOGLE_SHEETS_ENABLED:
+            self.sheets_uploader = GoogleSheetsUploader()
+
+    def setup_incremental_csv(self, state_name):
+        """Setup incremental CSV file for a state"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            clean_state = state_name.replace(' ', '_').replace('&', 'and').replace('/', '_').upper()
+
+            self.incremental_csv_file = f"{clean_state}_phase2_incremental_{timestamp}.csv"
+            self.csv_headers_written = False
+
+            logger.info(f"📝 Setup incremental CSV: {self.incremental_csv_file}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error setting up incremental CSV: {e}")
+            return False
+
+    def write_to_incremental_csv(self, combined_data):
+        """Write a single school record to incremental CSV immediately"""
+        try:
+            if not self.incremental_csv_file:
+                logger.warning("⚠️ Incremental CSV file not setup")
+                return False
+
+            # Convert to DataFrame for consistent handling
+            df = pd.DataFrame([combined_data])
+
+            # Write headers if first record
+            if not self.csv_headers_written:
+                df.to_csv(self.incremental_csv_file, mode='w', index=False, header=True)
+                self.csv_headers_written = True
+                logger.debug(f"📝 Wrote headers to incremental CSV")
+            else:
+                # Append data without headers
+                df.to_csv(self.incremental_csv_file, mode='a', index=False, header=False)
+
+            logger.debug(f"📝 Appended 1 record to incremental CSV")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error writing to incremental CSV: {e}")
+            return False
+
+    def upload_to_google_sheets(self, csv_filename, state_name):
+        """Upload Phase 2 data to Google Sheets"""
+        try:
+            if not self.sheets_uploader:
+                logger.warning("⚠️ Google Sheets uploader not initialized")
+                return False
+
+            # Authenticate if not already done
+            if not self.sheets_uploader.authenticated:
+                logger.info("🔐 Authenticating with Google Sheets...")
+                if not self.sheets_uploader.authenticate():
+                    logger.error("❌ Failed to authenticate with Google Sheets")
+                    return False
+
+            # Upload data
+            logger.info(f"📤 Uploading {state_name} data to Google Sheets...")
+            success = self.sheets_uploader.upload_phase2_data(csv_filename, state_name)
+
+            if success:
+                logger.info(f"✅ Successfully uploaded {state_name} to Google Sheets")
+            else:
+                logger.error(f"❌ Failed to upload {state_name} to Google Sheets")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"❌ Error uploading to Google Sheets for {state_name}: {e}")
+            return False
 
     def extract_value_from_element_text(self, element_text, field_name):
         """Helper method to extract value from element text"""
@@ -709,103 +930,100 @@ class AutomatedPhase2Processor:
         return None
 
     def process_state_file_automated(self, csv_file):
-        """Process entire state file automatically with optimal batching"""
+        """Process entire state file automatically with dual output strategy"""
         try:
             state_name = self.extract_state_name_from_filename(csv_file)
             logger.info(f"\n🏛️ PROCESSING STATE: {state_name}")
             logger.info(f"📁 File: {csv_file}")
-            
+
+            # Setup incremental CSV for this state
+            if not self.setup_incremental_csv(state_name):
+                logger.error("❌ Failed to setup incremental CSV")
+                return False
+
             # Load data
             df = pd.read_csv(csv_file)
             logger.info(f"   📊 Loaded {len(df)} total records")
-            
+
             # Filter Phase 2 ready schools
             schools_to_process = self.filter_phase2_ready_schools(df)
-            
+
             if len(schools_to_process) == 0:
                 logger.info("   ✅ No schools ready for Phase 2 processing")
+                # Still upload empty file to Google Sheets if configured
+                if GOOGLE_SHEETS_ENABLED and self.incremental_csv_file:
+                    self.upload_to_google_sheets(self.incremental_csv_file, state_name)
                 return True
-            
-            logger.info(f"   🎯 Processing {len(schools_to_process)} schools in batches of {self.optimal_batch_size}")
-            
-            # Process all schools in optimal batches
-            total_batches = (len(schools_to_process) + self.optimal_batch_size - 1) // self.optimal_batch_size
-            
-            for batch_num in range(total_batches):
-                start_idx = batch_num * self.optimal_batch_size
-                end_idx = min(start_idx + self.optimal_batch_size, len(schools_to_process))
-                
-                batch = schools_to_process.iloc[start_idx:end_idx]
-                logger.info(f"   🔄 Processing batch {batch_num + 1}/{total_batches}: schools {start_idx + 1}-{end_idx}")
-                
-                # Process batch
-                self.process_batch_automated(batch, state_name, batch_num + 1)
-                
-                # Brief pause between batches
-                time.sleep(1)
-            
+
+            logger.info(f"   🎯 Processing {len(schools_to_process)} schools with incremental CSV writing")
+            logger.info(f"   📝 Incremental CSV: {self.incremental_csv_file}")
+
+            # Process all schools individually with incremental writing
+            successful_count = 0
+
+            for idx, (_, school) in enumerate(schools_to_process.iterrows(), 1):
+                try:
+                    school_name = school.get('school_name', f'School_{idx}')
+                    logger.info(f"   🏫 Processing school {idx}/{len(schools_to_process)}: {school_name}")
+
+                    # Extract Phase 2 data
+                    extracted_data = self.extract_focused_data(school['know_more_link'])
+
+                    if extracted_data:
+                        # Combine original and extracted data
+                        combined_data = school.to_dict()
+                        combined_data.update(extracted_data)
+
+                        # Write immediately to incremental CSV
+                        if self.write_to_incremental_csv(combined_data):
+                            successful_count += 1
+                            self.success_count += 1
+                            logger.info(f"   ✅ School {idx} processed and saved to CSV")
+                        else:
+                            logger.warning(f"   ⚠️ School {idx} processed but CSV write failed")
+                            self.fail_count += 1
+                    else:
+                        logger.warning(f"   ❌ School {idx} extraction failed")
+                        self.fail_count += 1
+
+                    self.processed_count += 1
+
+                    # Brief pause between schools
+                    time.sleep(0.2)
+
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Failed to process school {idx}: {e}")
+                    self.fail_count += 1
+                    continue
+
             logger.info(f"   ✅ Completed processing state: {state_name}")
+            logger.info(f"   📊 Successfully processed: {successful_count}/{len(schools_to_process)} schools")
+
+            # Upload to Google Sheets after all schools are processed
+            if GOOGLE_SHEETS_ENABLED and self.incremental_csv_file and successful_count > 0:
+                logger.info(f"   📤 Uploading {state_name} data to Google Sheets...")
+                upload_success = self.upload_to_google_sheets(self.incremental_csv_file, state_name)
+                if upload_success:
+                    logger.info(f"   ✅ Google Sheets upload completed for {state_name}")
+                else:
+                    logger.warning(f"   ⚠️ Google Sheets upload failed for {state_name} (CSV backup available)")
+
             return True
             
         except Exception as e:
             logger.error(f"❌ Error processing state file {csv_file}: {e}")
             return False
 
-    def process_batch_automated(self, batch, state_name, batch_num):
-        """Process a batch of schools automatically"""
-        try:
-            batch_results = []
-            batch_start_time = time.time()
-            
-            for idx, school in batch.iterrows():
-                try:
-                    # Extract data
-                    extracted_data = self.extract_focused_data(school['know_more_link'])
-                    
-                    if extracted_data:
-                        # Combine original and extracted data
-                        combined_data = school.to_dict()
-                        combined_data.update(extracted_data)
-                        batch_results.append(combined_data)
-                        self.success_count += 1
-                    else:
-                        self.fail_count += 1
-                    
-                    self.processed_count += 1
-                    
-                    # Brief pause between schools
-                    time.sleep(0.2)  # Ultra-fast processing
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to process school {idx}: {e}")
-                    self.fail_count += 1
-                    continue
-            
-            # Save batch results
-            if batch_results:
-                self.save_batch_results(batch_results, state_name, batch_num)
-            
-            batch_time = time.time() - batch_start_time
-            logger.info(f"      ⏱️ Batch completed in {batch_time:.1f}s ({len(batch_results)}/{len(batch)} successful)")
-            
-        except Exception as e:
-            logger.error(f"❌ Error processing batch: {e}")
+    # Legacy batch processing methods - replaced by incremental processing
+    # def process_batch_automated(self, batch, state_name, batch_num):
+    #     """Process a batch of schools automatically - DEPRECATED"""
+    #     # This method has been replaced by individual processing with incremental CSV writing
+    #     pass
 
-    def save_batch_results(self, results, state_name, batch_num):
-        """Save batch results to CSV"""
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            clean_state = state_name.replace(' ', '_').replace('&', 'and').replace('/', '_').upper()
-            
-            filename = f"{clean_state}_phase2_batch{batch_num}_{timestamp}.csv"
-            
-            df = pd.DataFrame(results)
-            df.to_csv(filename, index=False)
-            
-            logger.info(f"      💾 Saved {len(results)} records to: {filename}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error saving batch results: {e}")
+    # def save_batch_results(self, results, state_name, batch_num):
+    #     """Save batch results to CSV - DEPRECATED"""
+    #     # This method has been replaced by incremental CSV writing
+    #     pass
 
     def run_automated_processing(self):
         """Main automated processing function"""
@@ -863,13 +1081,17 @@ class AutomatedPhase2Processor:
             success_rate = (self.success_count / self.processed_count) * 100
             logger.info(f"   📈 Success rate: {success_rate:.1f}%")
         
-        logger.info(f"\n💾 Output files saved with pattern: *_phase2_batch*_*.csv")
+        logger.info(f"\n💾 Output Strategy:")
+        logger.info(f"   📝 Incremental CSV files: *_phase2_incremental_*.csv")
+        logger.info(f"   📤 Google Sheets: Uploaded to '{GOOGLE_SHEET_NAME}' (if enabled)")
         logger.info("🎉 Automated Phase 2 processing complete!")
 
 def main():
     """Main function for automated Phase 2 processing"""
-    print("🚀 AUTOMATED PHASE 2 PROCESSOR")
+    print("🚀 AUTOMATED PHASE 2 PROCESSOR - DUAL OUTPUT STRATEGY")
     print("Automatically processes ALL Phase 1 CSV files")
+    print("📝 Incremental CSV: Each school saved immediately")
+    print("📤 Google Sheets: Bulk upload after state completion")
     print("No user interaction required - fully automated")
     print()
     

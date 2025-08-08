@@ -173,54 +173,134 @@ class Phase2FixesValidator:
         return test_result
     
     def run_validation_test(self):
-        """Run the complete validation test"""
+        """Run the complete validation test using the new dual output strategy"""
         logger.info("🚀 STARTING PHASE 2 FIXES VALIDATION TEST")
+        logger.info("🎯 Testing NEW DUAL OUTPUT STRATEGY (Incremental CSV + Google Sheets)")
         logger.info("="*80)
-        
+
         # Find Phase 1 files
         csv_files = self.find_phase1_files()
         if not csv_files:
             return False
-        
+
         # Use the first available file
         csv_file = csv_files[0]
         logger.info(f"📁 Using file: {csv_file}")
-        
-        # Select test schools
+
+        # Select test schools and create a temporary test CSV
         test_schools = self.select_test_schools(csv_file, num_schools=10)
         if test_schools is None:
             return False
-        
+
+        # Create a temporary CSV file with just the test schools
+        test_csv_file = "temp_test_phase2_10_schools.csv"
+        test_schools.to_csv(test_csv_file, index=False)
+        logger.info(f"📝 Created temporary test CSV: {test_csv_file}")
+
         # Setup processor
         if not self.setup_processor():
             return False
-        
-        # Test each school
-        logger.info(f"\n🧪 TESTING {len(test_schools)} SCHOOLS")
+
+        # Test the COMPLETE dual output strategy workflow
+        logger.info(f"\n🧪 TESTING DUAL OUTPUT STRATEGY WITH {len(test_schools)} SCHOOLS")
         logger.info("="*80)
-        
-        all_combined_data = []
-        
-        for idx, (_, school) in enumerate(test_schools.iterrows()):
-            result = self.test_single_school(school, idx)
-            
-            if result['extraction_success'] and 'combined_data' in result:
-                all_combined_data.append(result['combined_data'])
-            
-            # Brief pause between schools
-            time.sleep(1)
-        
-        # Save results
-        self.save_test_results(all_combined_data)
-        self.show_test_summary()
-        
-        # Cleanup
+        logger.info("📝 Testing: Incremental CSV writing")
+        logger.info("📤 Testing: Google Sheets upload (if enabled)")
+
+        try:
+            # Use the actual state processing method that contains our incremental CSV logic
+            success = self.processor.process_state_file_automated(test_csv_file)
+
+            if success:
+                logger.info("✅ Dual output strategy test SUCCESSFUL!")
+
+                # Check if incremental CSV was created
+                if self.processor.incremental_csv_file and os.path.exists(self.processor.incremental_csv_file):
+                    logger.info(f"✅ Incremental CSV created: {self.processor.incremental_csv_file}")
+
+                    # Load the incremental CSV to verify data
+                    df_incremental = pd.read_csv(self.processor.incremental_csv_file)
+                    logger.info(f"✅ Incremental CSV contains: {len(df_incremental)} records")
+
+                    # Copy to our expected output file
+                    df_incremental.to_csv("Output_phase_2_10.csv", index=False)
+                    logger.info("✅ Copied incremental CSV to Output_phase_2_10.csv")
+
+                    # Analyze the results
+                    self.analyze_incremental_csv_results(df_incremental)
+
+                else:
+                    logger.warning("⚠️ Incremental CSV file not found")
+
+            else:
+                logger.error("❌ Dual output strategy test FAILED!")
+
+        except Exception as e:
+            logger.error(f"❌ Error testing dual output strategy: {e}")
+            success = False
+
+        # Cleanup temporary file
+        try:
+            if os.path.exists(test_csv_file):
+                os.remove(test_csv_file)
+                logger.info(f"🗑️ Cleaned up temporary file: {test_csv_file}")
+        except:
+            pass
+
+        # Cleanup driver
         if self.processor and self.processor.driver:
             self.processor.driver.quit()
             logger.info("🔒 Driver closed")
-        
-        return True
-    
+
+        return success
+
+    def analyze_incremental_csv_results(self, df_incremental):
+        """Analyze the results from the incremental CSV file"""
+        logger.info(f"\n📊 ANALYZING INCREMENTAL CSV RESULTS")
+        logger.info("="*50)
+
+        # Basic statistics
+        total_records = len(df_incremental)
+        logger.info(f"📋 Total records: {total_records}")
+
+        # Check Basic Details fields
+        basic_details_stats = {}
+        for field in self.basic_details_fields:
+            if field in df_incremental.columns:
+                non_na_count = len(df_incremental[df_incremental[field] != 'N/A'])
+                percentage = (non_na_count / total_records * 100) if total_records > 0 else 0
+                basic_details_stats[field] = {'count': non_na_count, 'percentage': percentage}
+                logger.info(f"   {field}: {non_na_count}/{total_records} ({percentage:.1f}%)")
+
+        # Special focus on Year of Establishment (our primary fix)
+        if 'year_of_establishment' in df_incremental.columns:
+            year_values = df_incremental[df_incremental['year_of_establishment'] != 'N/A']['year_of_establishment']
+            if len(year_values) > 0:
+                logger.info(f"\n🎯 YEAR OF ESTABLISHMENT VALIDATION:")
+                logger.info(f"   ✅ Successfully extracted: {len(year_values)}/{total_records} schools")
+                logger.info(f"   📅 Sample years: {list(year_values.head(3))}")
+            else:
+                logger.warning(f"   ⚠️ No Year of Establishment data extracted")
+
+        # Check student/teacher data
+        student_teacher_fields = ['total_students', 'total_teachers']
+        logger.info(f"\n👥 STUDENT/TEACHER DATA:")
+        for field in student_teacher_fields:
+            if field in df_incremental.columns:
+                non_na_count = len(df_incremental[df_incremental[field] != 'N/A'])
+                percentage = (non_na_count / total_records * 100) if total_records > 0 else 0
+                logger.info(f"   {field}: {non_na_count}/{total_records} ({percentage:.1f}%)")
+
+        # Check data combination integrity
+        logger.info(f"\n🔗 DATA COMBINATION INTEGRITY:")
+        phase1_fields = ['school_name', 'district', 'state', 'know_more_link']
+        for field in phase1_fields:
+            if field in df_incremental.columns:
+                non_na_count = len(df_incremental[df_incremental[field].notna()])
+                logger.info(f"   Phase 1 field '{field}': {non_na_count}/{total_records} preserved")
+
+        return basic_details_stats
+
     def save_test_results(self, combined_data):
         """Save test results to CSV file"""
         try:
@@ -294,20 +374,24 @@ class Phase2FixesValidator:
 
 def main():
     """Main function to run the validation test"""
-    print("🧪 PHASE 2 FIXES VALIDATION TEST")
-    print("Testing Basic Details extraction improvements")
-    print("Focusing on: Year of Establishment, Management fields, Affiliation fields")
+    print("🧪 PHASE 2 FIXES VALIDATION TEST - DUAL OUTPUT STRATEGY")
+    print("Testing Basic Details extraction improvements + New incremental CSV functionality")
+    print("🎯 Primary Focus: Year of Establishment, Management fields, Affiliation fields")
+    print("📝 New Feature: Incremental CSV writing for crash protection")
+    print("📤 New Feature: Google Sheets bulk upload after completion")
     print()
     
     validator = Phase2FixesValidator()
     success = validator.run_validation_test()
     
     if success:
-        print("\n✅ Validation test completed successfully!")
+        print("\n✅ Dual output strategy validation test completed successfully!")
         print("📁 Check 'Output_phase_2_10.csv' for results")
+        print("📝 Check '*_phase2_incremental_*.csv' for incremental CSV files")
+        print("📤 Check Google Sheets for uploaded data (if enabled)")
         print("📄 Check 'test_phase2_fixes.log' for detailed logs")
     else:
-        print("\n❌ Validation test failed!")
+        print("\n❌ Dual output strategy validation test failed!")
         print("📄 Check 'test_phase2_fixes.log' for error details")
 
 if __name__ == "__main__":
