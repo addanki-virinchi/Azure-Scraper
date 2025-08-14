@@ -13,6 +13,7 @@ import time
 import logging
 import os
 import glob
+import re
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -249,6 +250,167 @@ class EnhancedStatewiseSchoolScraper:
         logger.warning(f"Failed to click next page button after {max_retries} attempts")
         return False
 
+    def extract_email_from_school_element(self, school_element):
+        """Extract email address from school element with multiple methods"""
+        try:
+            logger.debug("   📧 Extracting email address...")
+
+            # Method 1: Look for mailto links in href attributes
+            try:
+                mailto_links = school_element.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']")
+                if mailto_links:
+                    href = mailto_links[0].get_attribute('href')
+                    if href and href.startswith('mailto:'):
+                        email = href.replace('mailto:', '').strip()
+                        if email and '@' in email:
+                            logger.debug(f"   Found email from mailto link: {email}")
+                            return email
+            except Exception as e:
+                logger.debug(f"   Error extracting email from mailto link: {e}")
+
+            # Method 2: Look for email in span text within mailto links
+            try:
+                email_spans = school_element.find_elements(By.CSS_SELECTOR, "a[href^='mailto:'] span")
+                if email_spans:
+                    email_text = email_spans[0].text.strip()
+                    if email_text and '@' in email_text:
+                        logger.debug(f"   Found email from span text: {email_text}")
+                        return email_text
+            except Exception as e:
+                logger.debug(f"   Error extracting email from span: {e}")
+
+            # Method 3: Look for email patterns in the element's HTML
+            try:
+                element_html = school_element.get_attribute('innerHTML')
+                if element_html:
+                    # Look for mailto links in HTML
+                    mailto_pattern = r'href="mailto:([^"]+)"'
+                    mailto_match = re.search(mailto_pattern, element_html, re.IGNORECASE)
+                    if mailto_match:
+                        email = mailto_match.group(1).strip()
+                        if email and '@' in email:
+                            logger.debug(f"   Found email from HTML mailto: {email}")
+                            return email
+
+                    # Look for email patterns in span text
+                    span_email_pattern = r'<span[^>]*>([^<]*@[^<]*)</span>'
+                    span_match = re.search(span_email_pattern, element_html, re.IGNORECASE)
+                    if span_match:
+                        email = span_match.group(1).strip()
+                        if email and '@' in email:
+                            logger.debug(f"   Found email from HTML span: {email}")
+                            return email
+            except Exception as e:
+                logger.debug(f"   Error extracting email from HTML: {e}")
+
+            # Method 4: Look for email patterns in element text
+            try:
+                element_text = school_element.text
+                if element_text:
+                    # General email pattern
+                    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                    email_match = re.search(email_pattern, element_text)
+                    if email_match:
+                        email = email_match.group(0).strip()
+                        logger.debug(f"   Found email from text pattern: {email}")
+                        return email
+            except Exception as e:
+                logger.debug(f"   Error extracting email from text: {e}")
+
+            # No email found
+            logger.debug("   No email address found")
+            return 'N/A'
+
+        except Exception as e:
+            logger.debug(f"   Error in email extraction: {e}")
+            return 'N/A'
+
+    def extract_single_school_data_with_email(self, school_element):
+        """Enhanced single school data extraction with email functionality"""
+        try:
+            # First, get the base school data using the original method
+            school_data = self.base_scraper.extract_single_school_data(school_element)
+
+            if not school_data:
+                return None
+
+            # Add email extraction
+            email = self.extract_email_from_school_element(school_element)
+            school_data['email'] = email
+
+            # Log email extraction result
+            if email != 'N/A':
+                logger.debug(f"   ✅ Email extracted: {email}")
+            else:
+                logger.debug(f"   ⚠️ No email found for school: {school_data.get('school_name', 'Unknown')}")
+
+            return school_data
+
+        except Exception as e:
+            logger.debug(f"   Error in enhanced school data extraction: {e}")
+            return None
+
+    def extract_schools_from_current_page_with_email(self):
+        """Enhanced schools extraction from current page with email functionality"""
+        try:
+            # Try multiple selectors to find school elements (same as base method)
+            selectors_to_try = [
+                ".accordion-body",
+                ".accordion-item",
+                "[class*='accordion']",
+                ".card-body",
+                ".result-item",
+                "table tbody tr",
+                ".school-item"
+            ]
+
+            school_elements = []
+            working_selector = None
+
+            for selector in selectors_to_try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if elements:
+                    school_elements = elements
+                    working_selector = selector
+                    logger.debug(f"   Found {len(elements)} school elements with selector: {selector}")
+                    break
+
+            if not school_elements:
+                logger.warning("   ⚠️ No school elements found with any selector")
+                # Debug: Check page content
+                page_text = self.driver.page_source[:1000]
+                if "No records found" in page_text or "No data available" in page_text:
+                    logger.info("   📄 Confirmed: No schools in this district")
+                else:
+                    logger.warning("   ⚠️ Page may not have loaded properly")
+                return []
+
+            # Process all schools with enhanced extraction including email
+            schools_data = []
+            email_found_count = 0
+
+            for i, school_element in enumerate(school_elements, 1):
+                try:
+                    school_data = self.extract_single_school_data_with_email(school_element)
+                    if school_data:
+                        schools_data.append(school_data)
+
+                        # Count emails found
+                        if school_data.get('email', 'N/A') != 'N/A':
+                            email_found_count += 1
+
+                except Exception as e:
+                    logger.debug(f"   Error processing school element {i}: {e}")
+                    continue
+
+            logger.info(f"   📧 Email extraction: {email_found_count}/{len(schools_data)} schools have email addresses")
+            logger.debug(f"   Extracted {len(schools_data)} schools from current page using selector: {working_selector}")
+            return schools_data
+
+        except Exception as e:
+            logger.error(f"   Error extracting schools from page with email: {e}")
+            return []
+
     def extract_schools_basic_data_enhanced(self):
         """Enhanced schools extraction with improved pagination and no smooth scrolling"""
         try:
@@ -264,8 +426,8 @@ class EnhancedStatewiseSchoolScraper:
                 # Scroll to bottom to ensure all content is loaded
                 self.scroll_to_bottom()
 
-                # Extract schools from current page using base method
-                page_schools = self.base_scraper.extract_schools_from_current_page()
+                # Extract schools from current page using enhanced method with email extraction
+                page_schools = self.extract_schools_from_current_page_with_email()
                 schools_data.extend(page_schools)
 
                 logger.info(f"   ✅ Extracted {len(page_schools)} schools from page {page_number}")
