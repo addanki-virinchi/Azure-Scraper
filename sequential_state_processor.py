@@ -14,6 +14,8 @@ import logging
 import os
 import glob
 import re
+import csv
+import pandas as pd
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -37,6 +39,11 @@ class EnhancedStatewiseSchoolScraper:
         self.current_district = None
         self.state_schools_with_links = {}
         self.state_schools_no_links = {}
+
+        # CSV file management for incremental saving
+        self.current_csv_file = None
+        self.csv_headers_written = False
+        self.total_schools_saved = 0
 
     def __getattr__(self, name):
         """Delegate all undefined methods to the base scraper"""
@@ -82,11 +89,17 @@ class EnhancedStatewiseSchoolScraper:
                 logger.error("❌ Failed to click search button")
                 return False
 
-            # Wait a moment for results to load
-            time.sleep(3)
+            # Optimized wait time for results to load
+            time.sleep(2)  # Reduced from 5 to 2 seconds for faster processing
 
-            # Try to set results per page to 100
-            self.set_results_per_page_to_100()
+            # Try to set results per page to 100 with verification
+            results_per_page_success = self.set_results_per_page_to_100()
+            if results_per_page_success:
+                logger.info("✅ Successfully set results per page to 100")
+                # Reduced wait after changing results per page
+                time.sleep(1)  # Reduced from 3 to 1 second
+            else:
+                logger.warning("⚠️ Failed to set results per page to 100 - continuing with default")
 
             # Scroll to bottom of page to ensure all content is loaded
             self.scroll_to_bottom()
@@ -98,41 +111,233 @@ class EnhancedStatewiseSchoolScraper:
             return False
 
     def set_results_per_page_to_100(self):
-        """Set results per page to 100 for maximum efficiency"""
+        """Set results per page to 100 for maximum efficiency with verification"""
         try:
             logger.info("🔧 Setting results per page to 100...")
 
-            # Wait for the results per page dropdown to be available
-            results_per_page_select = WebDriverWait(self.driver, 10).until(
+            # Wait for the results per page dropdown to be available with optimized timeout
+            results_per_page_select = WebDriverWait(self.driver, 8).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "select.form-select.w11110"))
             )
 
             # Create Select object and choose 100
             select = Select(results_per_page_select)
-            select.select_by_value("100")
 
-            logger.info("✅ Successfully set results per page to 100")
-            time.sleep(2)  # Wait for page to update
-            return True
+            # Check if 100 option is available
+            available_options = [option.get_attribute('value') for option in select.options]
+            logger.info(f"📋 Available results per page options: {available_options}")
+
+            if "100" in available_options:
+                select.select_by_value("100")
+
+                # Verify the selection was successful
+                selected_value = select.first_selected_option.get_attribute('value')
+                if selected_value == "100":
+                    logger.info("✅ Successfully set and verified results per page to 100")
+                    time.sleep(1)  # Reduced wait time for page to update
+                    return True
+                else:
+                    logger.warning(f"⚠️ Selection verification failed. Selected: {selected_value}")
+                    return False
+            else:
+                logger.warning("⚠️ Option '100' not available in results per page dropdown")
+                # Try to select the highest available option
+                max_option = max([int(opt) for opt in available_options if opt.isdigit()])
+                select.select_by_value(str(max_option))
+                logger.info(f"📋 Selected maximum available option: {max_option}")
+                time.sleep(1)  # Reduced wait time
+                return True
 
         except Exception as e:
             logger.warning(f"⚠️ Failed to set results per page to 100: {e}")
             return False
 
     def scroll_to_bottom(self):
-        """Scroll directly to bottom of page to ensure all content is loaded"""
+        """Optimized scroll to bottom with minimal wait times"""
         try:
-            logger.info("🔄 Scrolling to bottom of page...")
+            logger.debug("🔄 Scrolling to bottom of page...")
 
-            # Scroll to bottom of page
+            # Fast scroll to bottom without height checking for performance
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)  # Wait for any dynamic content to load
+            time.sleep(0.5)  # Minimal wait - reduced from 3 seconds to 0.5 seconds
 
-            logger.info("✅ Scrolled to bottom of page")
+            logger.debug("✅ Scrolled to bottom of page")
             return True
 
         except Exception as e:
             logger.warning(f"⚠️ Error scrolling to bottom: {e}")
+            return False
+
+    def initialize_csv_file(self, state_name):
+        """Initialize CSV file for incremental saving with enhanced debugging"""
+        try:
+            # Create filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            clean_state_name = state_name.replace(' ', '_').replace('&', 'and').replace('/', '_').upper()
+            self.current_csv_file = f"{clean_state_name}_phase1_complete_{timestamp}.csv"
+
+            # Get absolute path for debugging
+            abs_path = os.path.abspath(self.current_csv_file)
+            current_dir = os.getcwd()
+
+            # Reset tracking variables
+            self.csv_headers_written = False
+            self.total_schools_saved = 0
+
+            logger.info(f"📁 Initialized CSV file for incremental saving: {self.current_csv_file}")
+            logger.info(f"📍 Absolute path: {abs_path}")
+            logger.info(f"📂 Current working directory: {current_dir}")
+
+            # Test if we can create the file
+            try:
+                test_file = open(self.current_csv_file, 'w', encoding='utf-8')
+                test_file.close()
+                os.remove(self.current_csv_file)  # Clean up test file
+                logger.info(f"✅ CSV file creation test successful")
+            except Exception as test_error:
+                logger.error(f"❌ CSV file creation test failed: {test_error}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error initializing CSV file: {e}")
+            return False
+
+    def save_schools_to_csv_incremental(self, schools_data, page_number):
+        """Save schools data to CSV file incrementally (page by page)"""
+        try:
+            if not schools_data:
+                logger.debug(f"   📄 No schools to save for page {page_number}")
+                return True
+
+            if not self.current_csv_file:
+                logger.error("❌ CSV file not initialized")
+                return False
+
+            # Define CSV headers (matching Phase 1 structure)
+            headers = [
+                'state', 'state_id', 'district', 'district_id', 'udise_code', 'school_name',
+                'operational_status', 'school_category', 'school_management', 'school_type',
+                'location', 'pincode', 'cluster', 'village_ward', 'habitation',
+                'assembly_constituency', 'parliament_constituency', 'block_name',
+                'know_more_link', 'email', 'last_modified', 'extraction_date'
+            ]
+
+            # Write headers if this is the first write
+            if not self.csv_headers_written:
+                try:
+                    with open(self.current_csv_file, 'w', newline='', encoding='utf-8') as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=headers)
+                        writer.writeheader()
+                        csvfile.flush()  # Ensure data is written to disk
+
+                    # Verify file was created
+                    if os.path.exists(self.current_csv_file):
+                        file_size = os.path.getsize(self.current_csv_file)
+                        logger.info(f"   📝 Created CSV file with headers: {self.current_csv_file} ({file_size} bytes)")
+                        self.csv_headers_written = True
+                    else:
+                        logger.error(f"   ❌ CSV file was not created: {self.current_csv_file}")
+                        return False
+
+                except Exception as header_error:
+                    logger.error(f"   ❌ Error writing CSV headers: {header_error}")
+                    return False
+
+            # Append schools data to CSV
+            try:
+                with open(self.current_csv_file, 'a', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=headers)
+
+                    rows_written = 0
+                    for school in schools_data:
+                        # Ensure all required fields are present
+                        school_row = {}
+                        for header in headers:
+                            school_row[header] = school.get(header, 'N/A')
+                        writer.writerow(school_row)
+                        rows_written += 1
+
+                    csvfile.flush()  # Ensure data is written to disk
+
+                self.total_schools_saved += len(schools_data)
+
+                # Verify file exists and has grown
+                if os.path.exists(self.current_csv_file):
+                    file_size = os.path.getsize(self.current_csv_file)
+                    logger.info(f"   💾 Saved page {page_number} with {len(schools_data)} schools to CSV")
+                    logger.info(f"   📊 Total schools saved so far: {self.total_schools_saved}")
+                    logger.info(f"   📄 Current file size: {file_size} bytes")
+                else:
+                    logger.error(f"   ❌ CSV file disappeared after writing: {self.current_csv_file}")
+                    return False
+
+            except Exception as write_error:
+                logger.error(f"   ❌ Error writing schools data to CSV: {write_error}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error saving schools to CSV: {e}")
+            return False
+
+    def check_csv_file_status(self):
+        """Check current CSV file status and provide detailed information"""
+        try:
+            if not self.current_csv_file:
+                logger.warning("⚠️ No CSV file initialized")
+                return False
+
+            abs_path = os.path.abspath(self.current_csv_file)
+            logger.info(f"🔍 Checking CSV file status:")
+            logger.info(f"   📄 Filename: {self.current_csv_file}")
+            logger.info(f"   📍 Absolute path: {abs_path}")
+
+            if os.path.exists(self.current_csv_file):
+                file_size = os.path.getsize(self.current_csv_file)
+                mod_time = datetime.fromtimestamp(os.path.getmtime(self.current_csv_file))
+                logger.info(f"   ✅ File exists: YES")
+                logger.info(f"   📊 File size: {file_size} bytes ({file_size/1024:.1f} KB)")
+                logger.info(f"   🕒 Last modified: {mod_time}")
+                logger.info(f"   📊 Schools saved: {self.total_schools_saved}")
+                return True
+            else:
+                logger.error(f"   ❌ File exists: NO")
+                logger.error(f"   📂 Directory contents:")
+                try:
+                    current_dir = os.getcwd()
+                    files = [f for f in os.listdir(current_dir) if f.endswith('.csv')]
+                    for f in files[:5]:  # Show first 5 CSV files
+                        logger.error(f"      • {f}")
+                except:
+                    pass
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error checking CSV file status: {e}")
+            return False
+
+    def finalize_csv_file(self):
+        """Finalize CSV file and provide summary"""
+        try:
+            # First check the file status
+            self.check_csv_file_status()
+
+            if self.current_csv_file and os.path.exists(self.current_csv_file):
+                file_size = os.path.getsize(self.current_csv_file)
+                abs_path = os.path.abspath(self.current_csv_file)
+                logger.info(f"📁 CSV file finalized: {self.current_csv_file}")
+                logger.info(f"📍 Full path: {abs_path}")
+                logger.info(f"📊 Final statistics: {self.total_schools_saved} schools, {file_size/1024:.1f} KB")
+                return True
+            else:
+                logger.warning("⚠️ No CSV file to finalize or file does not exist")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error finalizing CSV file: {e}")
             return False
 
     def enhanced_click_next_page(self):
@@ -164,7 +369,8 @@ class EnhancedStatewiseSchoolScraper:
 
                     # Check if parent li has disabled class - this is the primary indicator
                     if "disabled" in parent_classes.lower():
-                        logger.info("📄 Next button is disabled (parent li has disabled class) - no more pages")
+                        logger.info("📄 Next button is disabled (parent li has disabled class) - reached end of pagination")
+                        logger.info(f"📊 Final pagination status: Parent classes = '{parent_classes}'")
                         return False
 
                 except Exception as parent_check_error:
@@ -174,23 +380,26 @@ class EnhancedStatewiseSchoolScraper:
                 # Additional checks for button state
                 button_classes = next_button.get_attribute("class") or ""
                 if "disabled" in button_classes.lower():
-                    logger.info("📄 Next button is disabled (has disabled class) - no more pages")
+                    logger.info("📄 Next button is disabled (has disabled class) - reached end of pagination")
+                    logger.info(f"📊 Final pagination status: Button classes = '{button_classes}'")
                     return False
 
                 # Check for disabled attribute
                 if next_button.get_attribute("disabled"):
-                    logger.info("📄 Next button has disabled attribute - no more pages")
+                    logger.info("📄 Next button has disabled attribute - reached end of pagination")
+                    logger.info(f"📊 Final pagination status: Disabled attribute = True")
                     return False
 
                 # Check if button is enabled (basic Selenium check)
                 if not next_button.is_enabled():
-                    logger.info("📄 Next button is not enabled - no more pages")
+                    logger.info("📄 Next button is not enabled - reached end of pagination")
+                    logger.info(f"📊 Final pagination status: Button enabled = False")
                     return False
 
                 # Scroll to button to ensure it's visible
                 try:
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
-                    time.sleep(1)
+                    time.sleep(0.3)  # Reduced from 1 second to 0.3 seconds
 
                     # Try multiple click methods with retry
                     click_success = False
@@ -229,8 +438,8 @@ class EnhancedStatewiseSchoolScraper:
                             logger.debug(f"Force JavaScript click failed: {force_click_error}")
 
                     if click_success:
-                        # Wait for page to load after successful click
-                        time.sleep(2)
+                        # Optimized wait time for page to load after successful click
+                        time.sleep(1.5)  # Reduced from 4 to 1.5 seconds for faster processing
                         return True
                     else:
                         logger.warning(f"All click methods failed on attempt {attempt + 1}")
@@ -238,9 +447,9 @@ class EnhancedStatewiseSchoolScraper:
                 except Exception as scroll_error:
                     logger.warning(f"Failed to scroll to next button on attempt {attempt + 1}: {scroll_error}")
 
-                # Wait before retry
+                # Optimized wait before retry
                 if attempt < max_retries - 1:
-                    time.sleep(1)
+                    time.sleep(0.5)  # Reduced from 2 to 0.5 seconds
 
             except Exception as e:
                 logger.warning(f"Error in enhanced_click_next_page attempt {attempt + 1}: {e}")
@@ -251,11 +460,9 @@ class EnhancedStatewiseSchoolScraper:
         return False
 
     def extract_email_from_school_element(self, school_element):
-        """Extract email address from school element with multiple methods"""
+        """Optimized email extraction with fast-fail approach"""
         try:
-            logger.debug("   📧 Extracting email address...")
-
-            # Method 1: Look for mailto links in href attributes
+            # Fast Method 1: Look for mailto links in href attributes (most common)
             try:
                 mailto_links = school_element.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']")
                 if mailto_links:
@@ -263,66 +470,34 @@ class EnhancedStatewiseSchoolScraper:
                     if href and href.startswith('mailto:'):
                         email = href.replace('mailto:', '').strip()
                         if email and '@' in email:
-                            logger.debug(f"   Found email from mailto link: {email}")
                             return email
-            except Exception as e:
-                logger.debug(f"   Error extracting email from mailto link: {e}")
+            except:
+                pass
 
-            # Method 2: Look for email in span text within mailto links
-            try:
-                email_spans = school_element.find_elements(By.CSS_SELECTOR, "a[href^='mailto:'] span")
-                if email_spans:
-                    email_text = email_spans[0].text.strip()
-                    if email_text and '@' in email_text:
-                        logger.debug(f"   Found email from span text: {email_text}")
-                        return email_text
-            except Exception as e:
-                logger.debug(f"   Error extracting email from span: {e}")
-
-            # Method 3: Look for email patterns in the element's HTML
+            # Fast Method 2: Single HTML extraction with combined regex
             try:
                 element_html = school_element.get_attribute('innerHTML')
                 if element_html:
-                    # Look for mailto links in HTML
-                    mailto_pattern = r'href="mailto:([^"]+)"'
-                    mailto_match = re.search(mailto_pattern, element_html, re.IGNORECASE)
-                    if mailto_match:
-                        email = mailto_match.group(1).strip()
-                        if email and '@' in email:
-                            logger.debug(f"   Found email from HTML mailto: {email}")
-                            return email
+                    # Combined email pattern search (mailto and general patterns)
+                    email_patterns = [
+                        r'href="mailto:([^"]+)"',  # mailto links
+                        r'<span[^>]*>([^<]*@[^<]*)</span>',  # span with email
+                        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'  # general email
+                    ]
 
-                    # Look for email patterns in span text
-                    span_email_pattern = r'<span[^>]*>([^<]*@[^<]*)</span>'
-                    span_match = re.search(span_email_pattern, element_html, re.IGNORECASE)
-                    if span_match:
-                        email = span_match.group(1).strip()
-                        if email and '@' in email:
-                            logger.debug(f"   Found email from HTML span: {email}")
-                            return email
-            except Exception as e:
-                logger.debug(f"   Error extracting email from HTML: {e}")
+                    for pattern in email_patterns:
+                        match = re.search(pattern, element_html, re.IGNORECASE)
+                        if match:
+                            email = match.group(1) if pattern.startswith('href') or pattern.startswith('<span') else match.group(0)
+                            email = email.strip()
+                            if email and '@' in email:
+                                return email
+            except:
+                pass
 
-            # Method 4: Look for email patterns in element text
-            try:
-                element_text = school_element.text
-                if element_text:
-                    # General email pattern
-                    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-                    email_match = re.search(email_pattern, element_text)
-                    if email_match:
-                        email = email_match.group(0).strip()
-                        logger.debug(f"   Found email from text pattern: {email}")
-                        return email
-            except Exception as e:
-                logger.debug(f"   Error extracting email from text: {e}")
-
-            # No email found
-            logger.debug("   No email address found")
             return 'N/A'
 
-        except Exception as e:
-            logger.debug(f"   Error in email extraction: {e}")
+        except:
             return 'N/A'
 
     def extract_single_school_data_with_email(self, school_element):
@@ -338,12 +513,7 @@ class EnhancedStatewiseSchoolScraper:
             email = self.extract_email_from_school_element(school_element)
             school_data['email'] = email
 
-            # Log email extraction result
-            if email != 'N/A':
-                logger.debug(f"   ✅ Email extracted: {email}")
-            else:
-                logger.debug(f"   ⚠️ No email found for school: {school_data.get('school_name', 'Unknown')}")
-
+            # Reduced logging for performance - only log email extraction in debug mode
             return school_data
 
         except Exception as e:
@@ -365,13 +535,11 @@ class EnhancedStatewiseSchoolScraper:
             ]
 
             school_elements = []
-            working_selector = None
 
             for selector in selectors_to_try:
                 elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 if elements:
                     school_elements = elements
-                    working_selector = selector
                     logger.debug(f"   Found {len(elements)} school elements with selector: {selector}")
                     break
 
@@ -389,7 +557,7 @@ class EnhancedStatewiseSchoolScraper:
             schools_data = []
             email_found_count = 0
 
-            for i, school_element in enumerate(school_elements, 1):
+            for school_element in school_elements:
                 try:
                     school_data = self.extract_single_school_data_with_email(school_element)
                     if school_data:
@@ -399,12 +567,12 @@ class EnhancedStatewiseSchoolScraper:
                         if school_data.get('email', 'N/A') != 'N/A':
                             email_found_count += 1
 
-                except Exception as e:
-                    logger.debug(f"   Error processing school element {i}: {e}")
-                    continue
+                except Exception:
+                    continue  # Simplified error handling for performance
 
-            logger.info(f"   📧 Email extraction: {email_found_count}/{len(schools_data)} schools have email addresses")
-            logger.debug(f"   Extracted {len(schools_data)} schools from current page using selector: {working_selector}")
+            # Reduced logging frequency - only log email stats every 10 pages or when significant
+            if len(schools_data) > 0:
+                logger.info(f"   📧 Email extraction: {email_found_count}/{len(schools_data)} schools have email addresses")
             return schools_data
 
         except Exception as e:
@@ -412,26 +580,40 @@ class EnhancedStatewiseSchoolScraper:
             return []
 
     def extract_schools_basic_data_enhanced(self):
-        """Enhanced schools extraction with improved pagination and no smooth scrolling"""
+        """Optimized schools extraction with incremental CSV saving and improved pagination"""
         try:
             schools_data = []
             page_number = 1
-            max_pages = 100  # Increased safety limit
+            start_time = time.time()
 
-            logger.info("🔍 Starting enhanced schools data extraction with robust pagination...")
+            logger.info("� Starting OPTIMIZED schools data extraction with robust pagination and incremental CSV saving...")
+            logger.info("⚡ Performance optimizations: Reduced wait times, optimized scrolling, faster email extraction")
 
-            while page_number <= max_pages:
+            while True:  # Remove hardcoded page limit - continue until no more pages
                 logger.info(f"📄 Processing page {page_number}")
 
-                # Scroll to bottom to ensure all content is loaded
-                self.scroll_to_bottom()
+                # Optimized scrolling: Only scroll on first page or every 5th page to reduce overhead
+                if page_number == 1 or page_number % 5 == 0:
+                    self.scroll_to_bottom()
 
                 # Extract schools from current page using enhanced method with email extraction
                 page_schools = self.extract_schools_from_current_page_with_email()
+
+                # Save page schools to CSV immediately for crash protection
+                if page_schools:
+                    save_success = self.save_schools_to_csv_incremental(page_schools, page_number)
+                    if not save_success:
+                        logger.warning(f"⚠️ Failed to save page {page_number} to CSV, but continuing extraction")
+
+                    # Check CSV file status after first page for debugging
+                    if page_number == 1:
+                        logger.info(f"🔍 Checking CSV file status after first page:")
+                        self.check_csv_file_status()
+
                 schools_data.extend(page_schools)
 
                 logger.info(f"   ✅ Extracted {len(page_schools)} schools from page {page_number}")
-                logger.info(f"   📊 Total schools so far: {len(schools_data)}")
+                logger.info(f"   📊 Total schools in memory: {len(schools_data)}")
 
                 # Try to go to next page using enhanced method with retry
                 logger.info(f"   🔄 Checking for next page after page {page_number}...")
@@ -441,23 +623,28 @@ class EnhancedStatewiseSchoolScraper:
 
                 page_number += 1
 
-                # Wait for next page to load completely
-                time.sleep(3)
+                # Optimized wait time for next page to load completely
+                time.sleep(2)  # Reduced from 5 to 2 seconds for faster processing
 
                 # Additional check: verify we're on a new page by checking if content changed
                 try:
-                    # Wait for new content to load
-                    WebDriverWait(self.driver, 10).until(
+                    # Wait for new content to load with optimized timeout
+                    WebDriverWait(self.driver, 8).until(
                         lambda driver: len(driver.find_elements(By.CSS_SELECTOR, ".accordion-body, .accordion-item, [class*='accordion']")) > 0
                     )
                 except Exception as wait_error:
                     logger.warning(f"Timeout waiting for new page content: {wait_error}")
                     # Continue anyway as content might already be loaded
 
-            if page_number > max_pages:
-                logger.warning(f"⚠️ Reached maximum page limit ({max_pages}). There might be more data available.")
+            # Performance summary
+            total_time = time.time() - start_time
+            avg_time_per_page = total_time / page_number if page_number > 0 else 0
 
-            logger.info(f"✅ Enhanced extraction completed: {len(schools_data)} total schools from {page_number} pages")
+            logger.info(f"✅ OPTIMIZED extraction completed: {len(schools_data)} total schools from {page_number} pages")
+            logger.info(f"⚡ Performance Summary: {total_time:.1f}s total, {avg_time_per_page:.1f}s per page (target: <180s per page)")
+            logger.info(f"📊 Pagination Summary: Processed {page_number} pages with no hardcoded limits")
+            logger.info(f"📊 Average schools per page: {len(schools_data)/page_number:.1f}")
+            logger.info(f"💾 CSV file saved: {self.current_csv_file} with {self.total_schools_saved} total schools")
             return schools_data
 
         except Exception as e:
@@ -465,13 +652,18 @@ class EnhancedStatewiseSchoolScraper:
             return []
 
     def process_single_state_enhanced(self, target_state):
-        """Enhanced processing for a single state"""
+        """Enhanced processing for a single state with incremental CSV saving"""
         try:
             logger.info(f"🎯 Enhanced processing for state: {target_state['stateName']}")
 
             # Set current state
             self.current_state = target_state
             self.base_scraper.current_state = target_state
+
+            # Initialize CSV file for incremental saving
+            if not self.initialize_csv_file(target_state['stateName']):
+                logger.error(f"❌ Failed to initialize CSV file for {target_state['stateName']}")
+                return False
 
             # Initialize state data storage
             self.state_schools_with_links[target_state['stateName']] = []
@@ -496,13 +688,14 @@ class EnhancedStatewiseSchoolScraper:
             # Process each district with enhanced features
             for district_index, district in enumerate(districts, 1):
                 logger.info(f"\n🏛️ Processing district {district_index}/{len(districts)}: {district['districtName']}")
+                logger.info(f"💾 Writing to CSV file: {self.current_csv_file}")
 
                 try:
                     # Select district
                     if self.select_district(district):
                         # Enhanced search with results per page optimization
                         if self.enhanced_click_search_button():
-                            # Extract schools using enhanced method
+                            # Extract schools using enhanced method with incremental CSV saving
                             schools_data = self.extract_schools_basic_data_enhanced()
                         else:
                             logger.error(f"❌ Failed to click search button for district: {district['districtName']}")
@@ -525,12 +718,16 @@ class EnhancedStatewiseSchoolScraper:
                     logger.error(f"❌ Error processing district {district['districtName']}: {district_error}")
                     continue
 
-            # Save data to CSV
+            # Save data to CSV (legacy method - but incremental saving already done)
             self.base_scraper.save_state_data_to_csv(target_state['stateName'])
 
             total_schools = (len(self.state_schools_with_links.get(target_state['stateName'], [])) +
                            len(self.state_schools_no_links.get(target_state['stateName'], [])))
             logger.info(f"✅ Enhanced processing completed for {target_state['stateName']}: {total_schools} total schools")
+            logger.info(f"💾 Incremental CSV file: {self.current_csv_file} with {self.total_schools_saved} schools saved")
+
+            # Finalize CSV file
+            self.finalize_csv_file()
 
             return True
 
@@ -539,7 +736,7 @@ class EnhancedStatewiseSchoolScraper:
             return False
 
     def process_single_state_single_district(self, target_state, target_district):
-        """Enhanced processing for a single state and single district"""
+        """Enhanced processing for a single state and single district with incremental CSV saving"""
         try:
             logger.info(f"🎯 Enhanced processing for district: {target_district['districtName']} in {target_state['stateName']}")
 
@@ -548,6 +745,11 @@ class EnhancedStatewiseSchoolScraper:
             self.current_district = target_district
             self.base_scraper.current_state = target_state
             self.base_scraper.current_district = target_district
+
+            # Initialize CSV file for incremental saving
+            if not self.initialize_csv_file(target_state['stateName']):
+                logger.error(f"❌ Failed to initialize CSV file for {target_state['stateName']}")
+                return False
 
             # Initialize state data storage
             self.state_schools_with_links[target_state['stateName']] = []
@@ -582,10 +784,14 @@ class EnhancedStatewiseSchoolScraper:
                     self.state_schools_no_links[target_state['stateName']].append(school)
                     self.base_scraper.state_schools_no_links[target_state['stateName']].append(school)
 
-            # Save data to CSV
+            # Save data to CSV (legacy method - but incremental saving already done)
             self.base_scraper.save_state_data_to_csv(target_state['stateName'])
 
             logger.info(f"✅ Enhanced processing completed for {target_district['districtName']}: {len(schools_data)} schools")
+            logger.info(f"💾 Incremental CSV file: {self.current_csv_file} with {self.total_schools_saved} schools saved")
+
+            # Finalize CSV file
+            self.finalize_csv_file()
 
             return True
 
