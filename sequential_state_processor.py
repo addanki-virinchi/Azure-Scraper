@@ -89,15 +89,18 @@ class EnhancedStatewiseSchoolScraper:
                 logger.error("❌ Failed to click search button")
                 return False
 
-            # Optimized wait time for results to load
-            time.sleep(2)  # Reduced from 5 to 2 seconds for faster processing
+            # Wait for initial results to load
+            time.sleep(3)  # Increased to ensure initial results load properly
 
             # Try to set results per page to 100 with verification
             results_per_page_success = self.set_results_per_page_to_100()
             if results_per_page_success:
                 logger.info("✅ Successfully set results per page to 100")
-                # Reduced wait after changing results per page
-                time.sleep(1)  # Reduced from 3 to 1 second
+                # Wait for page to reload with 100 results per page
+                time.sleep(3)  # Increased wait time for page to reload with more results
+
+                # Verify that school elements are now available
+                self.wait_for_school_elements_to_load()
             else:
                 logger.warning("⚠️ Failed to set results per page to 100 - continuing with default")
 
@@ -168,6 +171,44 @@ class EnhancedStatewiseSchoolScraper:
             logger.warning(f"⚠️ Error scrolling to bottom: {e}")
             return False
 
+    def wait_for_school_elements_to_load(self):
+        """Wait for school elements to be properly loaded on the page"""
+        try:
+            logger.info("⏳ Waiting for school elements to load...")
+
+            # Wait for school elements to be present
+            selectors_to_check = [
+                ".accordion-body",
+                ".accordion-item",
+                "[class*='accordion']"
+            ]
+
+            elements_found = False
+            for selector in selectors_to_check:
+                try:
+                    WebDriverWait(self.driver, 10).until(
+                        lambda driver: len(driver.find_elements(By.CSS_SELECTOR, selector)) > 0
+                    )
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        logger.info(f"✅ Found {len(elements)} school elements with selector: {selector}")
+                        elements_found = True
+                        break
+                except:
+                    continue
+
+            if not elements_found:
+                logger.warning("⚠️ No school elements found after waiting - page may have no results")
+
+            # Additional wait to ensure all content is fully rendered
+            time.sleep(2)
+
+            return elements_found
+
+        except Exception as e:
+            logger.warning(f"⚠️ Error waiting for school elements: {e}")
+            return False
+
     def initialize_csv_file(self, state_name):
         """Initialize CSV file for incremental saving with enhanced debugging"""
         try:
@@ -215,13 +256,12 @@ class EnhancedStatewiseSchoolScraper:
                 logger.error("❌ CSV file not initialized")
                 return False
 
-            # Define CSV headers (matching Phase 1 structure)
+            # Define CSV headers (matching Phase 1 specification exactly)
             headers = [
-                'state', 'state_id', 'district', 'district_id', 'udise_code', 'school_name',
+                'has_know_more_link', 'phase2_ready', 'state', 'state_id', 'district', 'district_id',
+                'extraction_date', 'udise_code', 'school_name', 'know_more_link', 'email',
                 'operational_status', 'school_category', 'school_management', 'school_type',
-                'location', 'pincode', 'cluster', 'village_ward', 'habitation',
-                'assembly_constituency', 'parliament_constituency', 'block_name',
-                'know_more_link', 'email', 'last_modified', 'extraction_date'
+                'school_location', 'address', 'pin_code'
             ]
 
             # Write headers if this is the first write
@@ -252,10 +292,33 @@ class EnhancedStatewiseSchoolScraper:
 
                     rows_written = 0
                     for school in schools_data:
-                        # Ensure all required fields are present
+                        # Ensure all required fields are present and map field names
                         school_row = {}
                         for header in headers:
-                            school_row[header] = school.get(header, 'N/A')
+                            if header == 'has_know_more_link':
+                                # Boolean: True if know_more_link exists and is valid
+                                know_more_link = school.get('know_more_link', 'N/A')
+                                school_row[header] = (know_more_link != 'N/A' and
+                                                    know_more_link and
+                                                    'schooldetail' in str(know_more_link))
+                            elif header == 'phase2_ready':
+                                # Boolean: Same as has_know_more_link (ready for Phase 2 if has valid link)
+                                know_more_link = school.get('know_more_link', 'N/A')
+                                school_row[header] = (know_more_link != 'N/A' and
+                                                    know_more_link and
+                                                    'schooldetail' in str(know_more_link))
+                            elif header == 'school_location':
+                                # Map 'location' field to 'school_location'
+                                school_row[header] = school.get('location', 'N/A')
+                            elif header == 'pin_code':
+                                # Map 'pincode' field to 'pin_code'
+                                school_row[header] = school.get('pincode', 'N/A')
+                            elif header == 'address':
+                                # Use address field or fallback to location
+                                school_row[header] = school.get('address', school.get('location', 'N/A'))
+                            else:
+                                # Direct mapping for all other fields
+                                school_row[header] = school.get(header, 'N/A')
                         writer.writerow(school_row)
                         rows_written += 1
 
@@ -545,13 +608,37 @@ class EnhancedStatewiseSchoolScraper:
 
             if not school_elements:
                 logger.warning("   ⚠️ No school elements found with any selector")
-                # Debug: Check page content
-                page_text = self.driver.page_source[:1000]
+                # Enhanced debugging: Check page content and state
+                page_text = self.driver.page_source[:2000]
+                current_url = self.driver.current_url
+                page_title = self.driver.title
+
+                logger.warning(f"   🔍 Debug info:")
+                logger.warning(f"      URL: {current_url}")
+                logger.warning(f"      Title: {page_title}")
+                logger.warning(f"      Page length: {len(self.driver.page_source)} chars")
+
                 if "No records found" in page_text or "No data available" in page_text:
                     logger.info("   📄 Confirmed: No schools in this district")
+                elif "loading" in page_text.lower() or "please wait" in page_text.lower():
+                    logger.warning("   ⏳ Page appears to be still loading - waiting longer...")
+                    time.sleep(3)
+                    # Retry element detection after additional wait
+                    for selector in selectors_to_try:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if elements:
+                            school_elements = elements
+                            logger.info(f"   ✅ Found {len(elements)} school elements after retry with: {selector}")
+                            break
+
+                    if not school_elements:
+                        logger.warning("   ❌ Still no elements found after retry")
+                        return []
                 else:
-                    logger.warning("   ⚠️ Page may not have loaded properly")
-                return []
+                    logger.warning("   ⚠️ Page may not have loaded properly or has different structure")
+                    # Log a sample of page content for debugging
+                    logger.warning(f"   📄 Page sample: {page_text[:500]}...")
+                    return []
 
             # Process all schools with enhanced extraction including email
             schools_data = []
@@ -592,12 +679,32 @@ class EnhancedStatewiseSchoolScraper:
             while True:  # Remove hardcoded page limit - continue until no more pages
                 logger.info(f"📄 Processing page {page_number}")
 
-                # Optimized scrolling: Only scroll on first page or every 5th page to reduce overhead
-                if page_number == 1 or page_number % 5 == 0:
+                # Special handling for first page to ensure proper loading
+                if page_number == 1:
+                    logger.info("🔍 First page - ensuring proper loading...")
+                    # Wait for school elements to be loaded
+                    self.wait_for_school_elements_to_load()
+                    # Always scroll on first page to ensure all content is loaded
+                    self.scroll_to_bottom()
+                elif page_number % 5 == 0:
+                    # Optimized scrolling: Only scroll every 5th page to reduce overhead
                     self.scroll_to_bottom()
 
                 # Extract schools from current page using enhanced method with email extraction
                 page_schools = self.extract_schools_from_current_page_with_email()
+
+                # Special handling for first page if extraction fails
+                if page_number == 1 and not page_schools:
+                    logger.warning("⚠️ First page extraction failed - attempting recovery...")
+                    # Wait longer and try again
+                    time.sleep(5)
+                    self.scroll_to_bottom()
+                    page_schools = self.extract_schools_from_current_page_with_email()
+
+                    if page_schools:
+                        logger.info(f"✅ First page recovery successful - found {len(page_schools)} schools")
+                    else:
+                        logger.error("❌ First page recovery failed - no schools extracted")
 
                 # Save page schools to CSV immediately for crash protection
                 if page_schools:
@@ -609,6 +716,9 @@ class EnhancedStatewiseSchoolScraper:
                     if page_number == 1:
                         logger.info(f"🔍 Checking CSV file status after first page:")
                         self.check_csv_file_status()
+                else:
+                    # Log when no schools are found on a page
+                    logger.warning(f"⚠️ No schools extracted from page {page_number}")
 
                 schools_data.extend(page_schools)
 

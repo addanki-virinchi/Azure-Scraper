@@ -66,13 +66,12 @@ class TestCSVSaver:
                 logger.error("❌ CSV file not initialized")
                 return False
 
-            # Define CSV headers (matching Phase 1 structure)
+            # Define CSV headers (matching Phase 1 specification exactly)
             headers = [
-                'state', 'state_id', 'district', 'district_id', 'udise_code', 'school_name',
+                'has_know_more_link', 'phase2_ready', 'state', 'state_id', 'district', 'district_id',
+                'extraction_date', 'udise_code', 'school_name', 'know_more_link', 'email',
                 'operational_status', 'school_category', 'school_management', 'school_type',
-                'location', 'pincode', 'cluster', 'village_ward', 'habitation',
-                'assembly_constituency', 'parliament_constituency', 'block_name',
-                'know_more_link', 'email', 'last_modified', 'extraction_date'
+                'school_location', 'address', 'pin_code'
             ]
 
             # Write headers if this is the first write
@@ -103,10 +102,33 @@ class TestCSVSaver:
                     
                     rows_written = 0
                     for school in schools_data:
-                        # Ensure all required fields are present
+                        # Ensure all required fields are present and map field names
                         school_row = {}
                         for header in headers:
-                            school_row[header] = school.get(header, 'N/A')
+                            if header == 'has_know_more_link':
+                                # Boolean: True if know_more_link exists and is valid
+                                know_more_link = school.get('know_more_link', 'N/A')
+                                school_row[header] = (know_more_link != 'N/A' and
+                                                    know_more_link and
+                                                    'schooldetail' in str(know_more_link))
+                            elif header == 'phase2_ready':
+                                # Boolean: Same as has_know_more_link (ready for Phase 2 if has valid link)
+                                know_more_link = school.get('know_more_link', 'N/A')
+                                school_row[header] = (know_more_link != 'N/A' and
+                                                    know_more_link and
+                                                    'schooldetail' in str(know_more_link))
+                            elif header == 'school_location':
+                                # Map 'location' field to 'school_location'
+                                school_row[header] = school.get('location', 'N/A')
+                            elif header == 'pin_code':
+                                # Map 'pincode' field to 'pin_code'
+                                school_row[header] = school.get('pincode', 'N/A')
+                            elif header == 'address':
+                                # Use address field or fallback to location
+                                school_row[header] = school.get('address', school.get('location', 'N/A'))
+                            else:
+                                # Direct mapping for all other fields
+                                school_row[header] = school.get(header, 'N/A')
                         writer.writerow(school_row)
                         rows_written += 1
                     
@@ -166,17 +188,11 @@ def test_csv_functionality():
                 'school_category': 'Primary',
                 'school_management': 'Government',
                 'school_type': 'Co-educational',
-                'location': 'Rural',
-                'pincode': '123456',
-                'cluster': 'Test Cluster',
-                'village_ward': 'Test Village',
-                'habitation': 'Test Habitation',
-                'assembly_constituency': 'Test AC',
-                'parliament_constituency': 'Test PC',
-                'block_name': 'Test Block',
-                'know_more_link': 'http://test.com',
+                'location': 'Rural',  # Will be mapped to school_location
+                'pincode': '123456',  # Will be mapped to pin_code
+                'address': 'Test Address 1',
+                'know_more_link': 'https://kys.udiseplus.gov.in/#/schooldetail/12345/12',
                 'email': 'test@school.com',
-                'last_modified': '2025-08-20',
                 'extraction_date': datetime.now().isoformat()
             },
             {
@@ -190,17 +206,11 @@ def test_csv_functionality():
                 'school_category': 'Secondary',
                 'school_management': 'Private',
                 'school_type': 'Co-educational',
-                'location': 'Urban',
-                'pincode': '123456',
-                'cluster': 'Test Cluster',
-                'village_ward': 'Test Village',
-                'habitation': 'Test Habitation',
-                'assembly_constituency': 'Test AC',
-                'parliament_constituency': 'Test PC',
-                'block_name': 'Test Block',
-                'know_more_link': 'http://test2.com',
+                'location': 'Urban',  # Will be mapped to school_location
+                'pincode': '123456',  # Will be mapped to pin_code
+                'address': 'Test Address 2',
+                'know_more_link': 'https://kys.udiseplus.gov.in/#/schooldetail/67890/12',
                 'email': 'test2@school.com',
-                'last_modified': '2025-08-20',
                 'extraction_date': datetime.now().isoformat()
             }
         ]
