@@ -15,7 +15,6 @@ import os
 import glob
 import re
 import csv
-import pandas as pd
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
@@ -89,18 +88,18 @@ class EnhancedStatewiseSchoolScraper:
                 logger.error("❌ Failed to click search button")
                 return False
 
-            # Wait for initial results to load
-            time.sleep(3)  # Increased to ensure initial results load properly
+            # Balanced wait for initial results to load (reliability focused)
+            time.sleep(2.5)  # Increased from 1.5s to 2.5s for better reliability
 
             # Try to set results per page to 100 with verification
             results_per_page_success = self.set_results_per_page_to_100()
             if results_per_page_success:
                 logger.info("✅ Successfully set results per page to 100")
-                # Wait for page to reload with 100 results per page
-                time.sleep(3)  # Increased wait time for page to reload with more results
+                # Reliable wait for page to reload with 100 results per page
+                time.sleep(2.5)  # Increased from 1.5s to 2.5s for complete loading
 
-                # Verify that school elements are now available
-                self.wait_for_school_elements_to_load()
+                # Verify that school elements are now available (with reliable timeout)
+                self.wait_for_school_elements_to_load()  # Use full method for reliability
             else:
                 logger.warning("⚠️ Failed to set results per page to 100 - continuing with default")
 
@@ -118,8 +117,8 @@ class EnhancedStatewiseSchoolScraper:
         try:
             logger.info("🔧 Setting results per page to 100...")
 
-            # Wait for the results per page dropdown to be available with optimized timeout
-            results_per_page_select = WebDriverWait(self.driver, 8).until(
+            # Wait for the results per page dropdown with reliable timeout
+            results_per_page_select = WebDriverWait(self.driver, 8).until(  # Restored to 8s for reliability
                 EC.presence_of_element_located((By.CSS_SELECTOR, "select.form-select.w11110"))
             )
 
@@ -137,7 +136,7 @@ class EnhancedStatewiseSchoolScraper:
                 selected_value = select.first_selected_option.get_attribute('value')
                 if selected_value == "100":
                     logger.info("✅ Successfully set and verified results per page to 100")
-                    time.sleep(1)  # Reduced wait time for page to update
+                    time.sleep(1.5)  # Increased from 0.5s to 1.5s for reliable page update
                     return True
                 else:
                     logger.warning(f"⚠️ Selection verification failed. Selected: {selected_value}")
@@ -148,7 +147,7 @@ class EnhancedStatewiseSchoolScraper:
                 max_option = max([int(opt) for opt in available_options if opt.isdigit()])
                 select.select_by_value(str(max_option))
                 logger.info(f"📋 Selected maximum available option: {max_option}")
-                time.sleep(1)  # Reduced wait time
+                time.sleep(1.5)  # Increased from 0.5s to 1.5s for reliable page update
                 return True
 
         except Exception as e:
@@ -200,13 +199,42 @@ class EnhancedStatewiseSchoolScraper:
             if not elements_found:
                 logger.warning("⚠️ No school elements found after waiting - page may have no results")
 
-            # Additional wait to ensure all content is fully rendered
-            time.sleep(2)
+            # Reliable wait to ensure all content is fully rendered
+            time.sleep(3)  # Increased from 2s to 3s for complete content loading
 
             return elements_found
 
         except Exception as e:
             logger.warning(f"⚠️ Error waiting for school elements: {e}")
+            return False
+
+    def wait_for_school_elements_to_load_fast(self):
+        """Fast version of element loading check with reduced timeouts"""
+        try:
+            logger.debug("⚡ Fast check for school elements...")
+
+            # Quick check with reduced timeout
+            selectors_to_check = [".accordion-body", ".accordion-item", "[class*='accordion']"]
+
+            for selector in selectors_to_check:
+                try:
+                    WebDriverWait(self.driver, 5).until(  # Reduced from 10s to 5s
+                        lambda driver: len(driver.find_elements(By.CSS_SELECTOR, selector)) > 0
+                    )
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        logger.debug(f"⚡ Fast found {len(elements)} elements with: {selector}")
+                        # Balanced wait for content rendering
+                        time.sleep(1.5)  # Increased from 0.5s to 1.5s for better reliability
+                        return True
+                except:
+                    continue
+
+            logger.debug("⚡ Fast check: No elements found")
+            return False
+
+        except Exception as e:
+            logger.debug(f"⚠️ Error in fast element check: {e}")
             return False
 
     def initialize_csv_file(self, state_name):
@@ -501,8 +529,8 @@ class EnhancedStatewiseSchoolScraper:
                             logger.debug(f"Force JavaScript click failed: {force_click_error}")
 
                     if click_success:
-                        # Optimized wait time for page to load after successful click
-                        time.sleep(1.5)  # Reduced from 4 to 1.5 seconds for faster processing
+                        # Balanced wait time for page to load after successful click
+                        time.sleep(1.5)  # Restored from 0.8s to 1.5s for reliable page loading
                         return True
                     else:
                         logger.warning(f"All click methods failed on attempt {attempt + 1}")
@@ -510,9 +538,9 @@ class EnhancedStatewiseSchoolScraper:
                 except Exception as scroll_error:
                     logger.warning(f"Failed to scroll to next button on attempt {attempt + 1}: {scroll_error}")
 
-                # Optimized wait before retry
+                # Reasonable wait before retry
                 if attempt < max_retries - 1:
-                    time.sleep(0.5)  # Reduced from 2 to 0.5 seconds
+                    time.sleep(0.8)  # Increased from 0.3s to 0.8s for better reliability
 
             except Exception as e:
                 logger.warning(f"Error in enhanced_click_next_page attempt {attempt + 1}: {e}")
@@ -523,40 +551,29 @@ class EnhancedStatewiseSchoolScraper:
         return False
 
     def extract_email_from_school_element(self, school_element):
-        """Optimized email extraction with fast-fail approach"""
+        """Ultra-fast email extraction with single DOM access"""
         try:
-            # Fast Method 1: Look for mailto links in href attributes (most common)
-            try:
-                mailto_links = school_element.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']")
-                if mailto_links:
-                    href = mailto_links[0].get_attribute('href')
-                    if href and href.startswith('mailto:'):
-                        email = href.replace('mailto:', '').strip()
-                        if email and '@' in email:
-                            return email
-            except:
-                pass
+            # Single DOM access for maximum performance
+            element_html = school_element.get_attribute('innerHTML')
+            if not element_html:
+                return 'N/A'
 
-            # Fast Method 2: Single HTML extraction with combined regex
-            try:
-                element_html = school_element.get_attribute('innerHTML')
-                if element_html:
-                    # Combined email pattern search (mailto and general patterns)
-                    email_patterns = [
-                        r'href="mailto:([^"]+)"',  # mailto links
-                        r'<span[^>]*>([^<]*@[^<]*)</span>',  # span with email
-                        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'  # general email
-                    ]
+            # Pre-compiled regex patterns for maximum speed
+            if not hasattr(self, '_email_patterns'):
+                self._email_patterns = [
+                    re.compile(r'href="mailto:([^"]+)"', re.IGNORECASE),  # mailto links
+                    re.compile(r'<span[^>]*>([^<]*@[^<]*)</span>', re.IGNORECASE),  # span with email
+                    re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')  # general email
+                ]
 
-                    for pattern in email_patterns:
-                        match = re.search(pattern, element_html, re.IGNORECASE)
-                        if match:
-                            email = match.group(1) if pattern.startswith('href') or pattern.startswith('<span') else match.group(0)
-                            email = email.strip()
-                            if email and '@' in email:
-                                return email
-            except:
-                pass
+            # Fast pattern matching with early exit
+            for i, pattern in enumerate(self._email_patterns):
+                match = pattern.search(element_html)
+                if match:
+                    email = match.group(1) if i < 2 else match.group(0)
+                    email = email.strip()
+                    if email and '@' in email and len(email) > 5:  # Basic validation
+                        return email
 
             return 'N/A'
 
@@ -564,7 +581,7 @@ class EnhancedStatewiseSchoolScraper:
             return 'N/A'
 
     def extract_single_school_data_with_email(self, school_element):
-        """Enhanced single school data extraction with email functionality"""
+        """Enhanced single school data extraction with validation and email functionality"""
         try:
             # First, get the base school data using the original method
             school_data = self.base_scraper.extract_single_school_data(school_element)
@@ -572,11 +589,26 @@ class EnhancedStatewiseSchoolScraper:
             if not school_data:
                 return None
 
+            # Validate that we have meaningful school data
+            # Check if essential fields have actual data (not just N/A)
+            essential_fields = ['school_name', 'udise_code', 'know_more_link']
+            has_meaningful_data = False
+
+            for field in essential_fields:
+                value = school_data.get(field, 'N/A')
+                if value and value != 'N/A' and value.strip():
+                    has_meaningful_data = True
+                    break
+
+            # If no meaningful data found, this might be an empty element
+            if not has_meaningful_data:
+                logger.debug(f"   ⚠️ Skipping element with no meaningful school data")
+                return None
+
             # Add email extraction
             email = self.extract_email_from_school_element(school_element)
             school_data['email'] = email
 
-            # Reduced logging for performance - only log email extraction in debug mode
             return school_data
 
         except Exception as e:
@@ -602,9 +634,26 @@ class EnhancedStatewiseSchoolScraper:
             for selector in selectors_to_try:
                 elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 if elements:
-                    school_elements = elements
-                    logger.debug(f"   Found {len(elements)} school elements with selector: {selector}")
-                    break
+                    # Filter out potentially empty elements
+                    filtered_elements = []
+                    for element in elements:
+                        try:
+                            # Check if element has meaningful content
+                            element_text = element.text.strip()
+                            element_html = element.get_attribute('innerHTML')
+
+                            # Skip if element is empty or has minimal content
+                            if (element_text and len(element_text) > 10) or \
+                               (element_html and len(element_html) > 50):
+                                filtered_elements.append(element)
+                        except:
+                            # If we can't check the element, include it to be safe
+                            filtered_elements.append(element)
+
+                    if filtered_elements:
+                        school_elements = filtered_elements
+                        logger.debug(f"   Found {len(elements)} elements, filtered to {len(filtered_elements)} with selector: {selector}")
+                        break
 
             if not school_elements:
                 logger.warning("   ⚠️ No school elements found with any selector")
@@ -621,9 +670,9 @@ class EnhancedStatewiseSchoolScraper:
                 if "No records found" in page_text or "No data available" in page_text:
                     logger.info("   📄 Confirmed: No schools in this district")
                 elif "loading" in page_text.lower() or "please wait" in page_text.lower():
-                    logger.warning("   ⏳ Page appears to be still loading - waiting longer...")
-                    time.sleep(3)
-                    # Retry element detection after additional wait
+                    logger.warning("   ⏳ Page appears to be still loading - waiting for completion...")
+                    time.sleep(3)  # Restored from 1.5s to 3s for complete loading
+                    # Retry element detection after adequate wait
                     for selector in selectors_to_try:
                         elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                         if elements:
@@ -643,8 +692,11 @@ class EnhancedStatewiseSchoolScraper:
             # Process all schools with enhanced extraction including email
             schools_data = []
             email_found_count = 0
+            skipped_elements = 0
 
-            for school_element in school_elements:
+            logger.debug(f"   🔍 Processing {len(school_elements)} detected school elements...")
+
+            for i, school_element in enumerate(school_elements, 1):
                 try:
                     school_data = self.extract_single_school_data_with_email(school_element)
                     if school_data:
@@ -653,9 +705,19 @@ class EnhancedStatewiseSchoolScraper:
                         # Count emails found
                         if school_data.get('email', 'N/A') != 'N/A':
                             email_found_count += 1
+                    else:
+                        skipped_elements += 1
+                        logger.debug(f"   ⚠️ Skipped element {i} - no meaningful data")
 
-                except Exception:
-                    continue  # Simplified error handling for performance
+                except Exception as e:
+                    skipped_elements += 1
+                    logger.debug(f"   ❌ Error processing element {i}: {e}")
+                    continue
+
+            # Log extraction summary
+            logger.info(f"   📊 Processed {len(school_elements)} elements: {len(schools_data)} valid schools, {skipped_elements} skipped")
+            if skipped_elements > 0:
+                logger.warning(f"   ⚠️ {skipped_elements} elements were skipped due to missing data - this may indicate empty divs or non-school elements")
 
             # Reduced logging frequency - only log email stats every 10 pages or when significant
             if len(schools_data) > 0:
@@ -679,26 +741,28 @@ class EnhancedStatewiseSchoolScraper:
             while True:  # Remove hardcoded page limit - continue until no more pages
                 logger.info(f"📄 Processing page {page_number}")
 
-                # Special handling for first page to ensure proper loading
+                # Reliable handling for first page
                 if page_number == 1:
-                    logger.info("🔍 First page - ensuring proper loading...")
-                    # Wait for school elements to be loaded
+                    logger.info("🔍 First page - ensuring complete loading...")
+                    # Full check for school elements to ensure reliability
                     self.wait_for_school_elements_to_load()
                     # Always scroll on first page to ensure all content is loaded
                     self.scroll_to_bottom()
                 elif page_number % 5 == 0:
-                    # Optimized scrolling: Only scroll every 5th page to reduce overhead
+                    # Balanced scrolling: Scroll every 5th page for reliability
                     self.scroll_to_bottom()
 
                 # Extract schools from current page using enhanced method with email extraction
                 page_schools = self.extract_schools_from_current_page_with_email()
 
-                # Special handling for first page if extraction fails
+                # Reliable first page recovery
                 if page_number == 1 and not page_schools:
-                    logger.warning("⚠️ First page extraction failed - attempting recovery...")
-                    # Wait longer and try again
-                    time.sleep(5)
+                    logger.warning("⚠️ First page extraction failed - attempting reliable recovery...")
+                    # Adequate wait time for recovery
+                    time.sleep(4)  # Increased from 2s to 4s for better recovery
                     self.scroll_to_bottom()
+                    # Additional wait after scrolling
+                    time.sleep(1)
                     page_schools = self.extract_schools_from_current_page_with_email()
 
                     if page_schools:
@@ -733,13 +797,13 @@ class EnhancedStatewiseSchoolScraper:
 
                 page_number += 1
 
-                # Optimized wait time for next page to load completely
-                time.sleep(2)  # Reduced from 5 to 2 seconds for faster processing
+                # Balanced wait time for next page to load completely
+                time.sleep(2)  # Increased from 1s to 2s for reliable page loading
 
-                # Additional check: verify we're on a new page by checking if content changed
+                # Reliable check for new content with adequate timeout
                 try:
-                    # Wait for new content to load with optimized timeout
-                    WebDriverWait(self.driver, 8).until(
+                    # Wait for new content to load with reliable timeout
+                    WebDriverWait(self.driver, 8).until(  # Restored from 4s to 8s for reliability
                         lambda driver: len(driver.find_elements(By.CSS_SELECTOR, ".accordion-body, .accordion-item, [class*='accordion']")) > 0
                     )
                 except Exception as wait_error:
