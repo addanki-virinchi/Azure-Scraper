@@ -15,14 +15,7 @@ config.ini
 secrets.txt
 
 # ===== OUTPUT FILES =====
-# CSV output files (data files)
-*.csv
-Output.csv
-output.csv
-*_phase1_*.csv
-*_phase2_*.csv
-*_complete_*.csv
-*_batch*.csv
+
 
 # Excel files
 *.xlsx
